@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: justbet-sdk
+Version: 0.1.0
+Summary: Python SDK for just.bet (WINR Protocol) — built for AI agents
+Requires-Python: >=3.9
