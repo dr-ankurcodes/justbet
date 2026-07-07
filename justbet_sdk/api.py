@@ -32,17 +32,20 @@ Step 3 — Use the token:
 
 Use JustBetAPI.login_with_email(email, otp_code) for a one-call helper.
 
-BET PLACEMENT  (verified from Burp — all 6 games captured June 2026)
+BET PLACEMENT  (verified from Burp — all 7 games captured June/July 2026)
 ─────────────
 All games: POST /api/archetype/{slug}/play
 
-  dice:     {"slug":"dice",     "wagerAmount":"50", "target":81.91, "direction":"under"}
-  limbo:    {"slug":"limbo",    "wagerAmount":"50", "target":2}
-  coinflip: {"slug":"coinflip", "wagerAmount":"50", "choice":0}
-  plinko:   {"slug":"plinko",   "wagerAmount":"50", "rows":8}
-  roll:     {"slug":"roll",     "wagerAmount":"50", "choices":[0,1,2,3]}
-  hilo:     {"slug":"hilo",     "wagerAmount":"50"}   ← starts round, no target
-              then POST /api/archetype/hilo/action: {"roundId":"...", "action":"higher"}
+  dice:        {"slug":"dice",        "wagerAmount":"50", "target":81.91, "direction":"under"}
+  limbo:       {"slug":"limbo",       "wagerAmount":"50", "target":2}
+  coinflip:    {"slug":"coinflip",    "wagerAmount":"50", "choice":0}
+  plinko:      {"slug":"plinko",      "wagerAmount":"50", "rows":8}
+  roll:        {"slug":"roll",        "wagerAmount":"50", "choices":[0,1,2,3]}
+  hilo:        {"slug":"hilo",        "wagerAmount":"50"}   ← starts round, no target
+                 then POST /api/archetype/hilo/action: {"roundId":"...", "action":"higher"}
+  video_poker: {"slug":"video_poker", "wagerAmount":"50"}   ← starts round, deals 5 cards
+                 then POST /api/archetype/video_poker/action:
+                   {"roundId":"...", "hold":[true,false,true,true,false]}
 
   wagerAmount — string, WINR display units (min 50, max 500000)
   target      — float for dice (e.g. 81.91) or float for limbo (e.g. 2.0)
@@ -50,6 +53,7 @@ All games: POST /api/archetype/{slug}/play
   choice      — 0=Tails, 1=Heads (coinflip only, singular)
   rows        — int 6-12 (plinko only)
   choices     — list of die face indices 0-5 (roll only)
+  hold        — list of 5 booleans, one per card (video_poker only)
 
   Standard success response keys: betId, roundId, game, wagerAmount,
     payoutAmount, profit, multiplier, result (game-specific), fairness,
@@ -61,6 +65,29 @@ All games: POST /api/archetype/{slug}/play
   hilo /action response: roundId, state("OPEN"|"CLOSED"), action, card,
     outcome, correct, currentMultiplier, payoutAmount, profit, won,
     balanceAfter, wasMaxWinCapped, serverSeedRevealed (when CLOSED)
+
+  video_poker — Jacks or Better, single 52-card deck, fresh shuffle every round.
+  /play response: roundId, archetype("video_poker"), state("OPEN"),
+    wagerAmount, cards (list of 5 internal indices), cardsView (list of 5
+    {rank, suit} objects), fairness {serverSeedHash, clientSeed, nonce},
+    balanceAfter, createdAt
+  video_poker /action response: roundId, archetype, state("CLOSED"), cards,
+    cardsView (final 5 cards after draw), rank (int hand rank 0-9),
+    rankName and paytable multipliers:
+      0 "No win"          0×   (includes pairs below Jacks — only J/Q/K/A pairs pay)
+      1 "Jacks or Better" 1×
+      2 "Two Pair"        2×
+      3 "Three of a Kind" 3×
+      4 "Straight"        5×
+      5 "Flush"           6×
+      6 "Full House"      8×
+      7 "Four of a Kind"  25×
+      8 "Straight Flush"  50×
+      9 "Royal Flush"     100×
+    multiplier, payoutAmount, profit, won, balanceAfter, wasMaxWinCapped
+
+  cardsView encoding: rank 1=Ace, 2-10=number, 11=Jack, 12=Queen, 13=King
+                      suit 0=Hearts, 1=Diamonds, 2=Clubs, 3=Spades
 
 PUBLIC ENDPOINTS (no auth needed):
   /api/games/most-popular, /api/games/trending, /api/games/new-releases
@@ -351,7 +378,7 @@ class JustBetAPI:
         """Return active quest list and reset timer."""
         return self._get("/api/cards/quests")
 
-    # ── bet placement (VERIFIED from Burp — 6 games, June 2026) ──────────────
+    # ── bet placement (VERIFIED from Burp — 7 games, June/July 2026) ─────────
 
     def place_bet(
         self,
@@ -367,13 +394,16 @@ class JustBetAPI:
         Place a bet on a game.  Requires ``auth_token``.
 
         VERIFIED endpoint: POST /api/archetype/{slug}/play
-        VERIFIED games (Burp, June 2026): dice, limbo, coinflip, plinko, roll, hilo.
+        VERIFIED games (Burp, June/July 2026):
+            dice, limbo, coinflip, plinko, roll, hilo, video_poker.
 
         Parameters
         ----------
         slug : str
             Verified game slugs: "dice", "limbo", "coinflip", "plinko", "roll".
             For hilo, use place_bet("hilo", wager_amount) then hilo_action().
+            For video_poker, use place_bet("video_poker", wager_amount) then
+            video_poker_action().
 
         wager_amount : int
             Bet size in WINR display units. Min: 50, Max: 500000.
@@ -398,19 +428,22 @@ class JustBetAPI:
         Returns
         -------
         dict
-            betId, roundId, game, wagerAmount, payoutAmount, profit, multiplier,
-            result (game-specific), fairness, balanceAfter, wasMaxWinCapped,
-            uncappedPayout, maxPayout, createdAt.
+            Standard games: betId, roundId, game, wagerAmount, payoutAmount,
+            profit, multiplier, result (game-specific), fairness, balanceAfter,
+            wasMaxWinCapped, uncappedPayout, maxPayout, createdAt.
             Raises urllib.error.HTTPError(402) on insufficient balance.
+
+            video_poker / hilo: roundId, state("OPEN"), initial deal info,
+            fairness, balanceAfter — then call video_poker_action / hilo_action.
 
         Examples
         --------
-        api.place_bet("dice",     wager_amount=50, target=81.91, direction="under")
-        api.place_bet("limbo",    wager_amount=50, target=2)
-        api.place_bet("coinflip", wager_amount=50, choice=1)       # Heads
-        api.place_bet("plinko",   wager_amount=50, rows=8)
-        api.place_bet("roll",     wager_amount=50, choices=[0,1,2,3])
-        # hilo: see place_bet + hilo_action below
+        api.place_bet("dice",        wager_amount=50, target=81.91, direction="under")
+        api.place_bet("limbo",       wager_amount=50, target=2)
+        api.place_bet("coinflip",    wager_amount=50, choice=1)       # Heads
+        api.place_bet("plinko",      wager_amount=50, rows=8)
+        api.place_bet("roll",        wager_amount=50, choices=[0,1,2,3])
+        # hilo/video_poker: see place_bet + hilo_action/video_poker_action below
         """
         body: Dict = {
             "slug":        slug,
@@ -468,6 +501,67 @@ class JustBetAPI:
         return self._post("/api/archetype/hilo/action", body={
             "roundId": round_id,
             "action":  action,
+        })
+
+    def video_poker_action(self, round_id: str, hold: List[bool]) -> Dict:
+        """
+        Draw cards for an active Video Poker round.  Requires ``auth_token``.
+
+        VERIFIED endpoint: POST /api/archetype/video_poker/action
+        Call after place_bet("video_poker", ...) returns state="OPEN".
+
+        Parameters
+        ----------
+        round_id : str
+            The ``roundId`` returned by place_bet("video_poker", ...).
+        hold : list of bool (length 5)
+            Which of the 5 initial cards to keep.
+            True  = keep this card (hold).
+            False = discard and draw a new card.
+            Example: [True, True, False, False, False] keeps first two cards.
+
+        Returns
+        -------
+        dict
+            roundId, archetype ("video_poker"), state ("CLOSED"),
+            cards (list of 5 internal indices), cardsView (list of 5
+            {rank, suit} dicts — final hand after draw),
+            rank (int 0-9), rankName, multiplier, payoutAmount, profit,
+            won (bool), balanceAfter, wasMaxWinCapped.
+
+        Paytable (× wager)
+        ------------------
+        0  "No win"           0×   (pairs of 2–10 also pay 0 — only J+ pairs pay)
+        1  "Jacks or Better"  1×
+        2  "Two Pair"         2×
+        3  "Three of a Kind"  3×
+        4  "Straight"         5×
+        5  "Flush"            6×
+        6  "Full House"       8×
+        7  "Four of a Kind"   25×
+        8  "Straight Flush"   50×
+        9  "Royal Flush"      100×
+
+        Card encoding
+        -------------
+        cardsView rank : 1=Ace, 2-10=pip, 11=Jack, 12=Queen, 13=King
+        cardsView suit : 0=Hearts, 1=Diamonds, 2=Clubs, 3=Spades
+
+        Example
+        -------
+        # Start video poker round
+        deal = api.place_bet("video_poker", wager_amount=50)
+        # deal["cardsView"] = [{"rank":3,"suit":0}, {"rank":9,"suit":0}, ...]
+
+        # Keep best cards, discard the rest
+        result = api.video_poker_action(deal["roundId"], hold=[True, False, True, True, False])
+        # result["rankName"] — e.g. "Jacks or Better", "No win"
+        # result["won"]      — True/False
+        # result["payoutAmount"] — amount won (0 on loss)
+        """
+        return self._post("/api/archetype/video_poker/action", body={
+            "roundId": round_id,
+            "hold":    hold,
         })
 
     # ── my bets (authenticated) ───────────────────────────────────────────────

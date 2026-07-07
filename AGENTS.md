@@ -57,6 +57,11 @@ result = api.place_bet("roll",     wager_amount=50, choices=[0,1,2,3])  # die fa
 round_info = api.place_bet("hilo", wager_amount=50)
 result = api.hilo_action(round_info["roundId"], "lower")  # "higher"|"lower"|"same"
 
+# video_poker is 2-step: start round (deal 5 cards), then choose which to hold
+deal = api.place_bet("video_poker", wager_amount=50)
+# deal["cardsView"] = [{"rank": 3, "suit": 0}, ...]  ← inspect your hand
+result = api.video_poker_action(deal["roundId"], hold=[True, False, True, True, False])
+
 # ── Step 5: Check own bet history ─────────────────────────────────────────────
 my_bets = api.get_my_bets(page=1, filter_="all")
 # {"data": {"bets": [{id, gameId, gameName, wagerAmount, payoutAmount, multiplier, ...}]}}
@@ -64,21 +69,22 @@ my_bets = api.get_my_bets(page=1, filter_="all")
 
 ## Supported games
 
-### Verified (Burp-confirmed request/response, June 2026)
-Only these 6 games should be used for betting:
+### Verified (Burp-confirmed request/response, June/July 2026)
+Only these 7 games should be used for betting:
 
-| Slug       | Key params                                          | Notes                          |
-|------------|-----------------------------------------------------|--------------------------------|
-| `dice`     | `target` (float 0–100), `direction` ("under"\|"over") | Win if roll is under/over target |
-| `limbo`    | `target` (float multiplier, e.g. 2.0)              | Win if crash point ≥ target    |
-| `coinflip` | `choice` (0=Tails, 1=Heads)                         | 50/50                          |
-| `plinko`   | `rows` (int 6–12)                                   | More rows = wider payout range |
-| `roll`     | `choices` (list of face indices 0–5)                | Pick which die faces win       |
-| `hilo`     | none for start; `action` ("higher"\|"lower"\|"same") for each step | Multi-step card game |
+| Slug          | Key params                                          | Notes                          |
+|---------------|-----------------------------------------------------|--------------------------------|
+| `dice`        | `target` (float 0–100), `direction` ("under"\|"over") | Win if roll is under/over target |
+| `limbo`       | `target` (float multiplier, e.g. 2.0)              | Win if crash point ≥ target    |
+| `coinflip`    | `choice` (0=Tails, 1=Heads)                         | 50/50                          |
+| `plinko`      | `rows` (int 6–12)                                   | More rows = wider payout range |
+| `roll`        | `choices` (list of face indices 0–5)                | Pick which die faces win       |
+| `hilo`        | none for start; `action` ("higher"\|"lower"\|"same") for each step | Multi-step card game |
+| `video_poker` | none for start; `hold` (list of 5 bools) for draw step | Jacks or Better; pairs of 2–10 pay 0 |
 
 ### Original games — unverified (do not bet on these)
-`keno`, `roulette`, `wheel`, `holdem`, `blackjack`, `video_poker`, `baccarat` are
-the remaining 7 original JustBet games. Their request/response formats have not
+`keno`, `roulette`, `wheel`, `holdem`, `blackjack`, `baccarat` are
+the remaining 6 original JustBet games. Their request/response formats have not
 been captured from Burp and may differ — do not call `place_bet` on them.
 
 ## All methods
@@ -109,6 +115,19 @@ result = api.hilo_action(round_id, action)
 # result: state ("OPEN"=continue | "CLOSED"=done), card, outcome, correct,
 #         currentMultiplier, payoutAmount, profit, won, balanceAfter
 # When state="CLOSED": serverSeedRevealed is included for provable fairness
+
+# ── Video Poker (multi-step) ──────────────────────────────────────────────────
+deal = api.place_bet("video_poker", wager_amount=50)
+# deal: roundId, state("OPEN"), wagerAmount, cards (5 internal indices),
+#       cardsView (5 x {rank, suit}), fairness, balanceAfter, createdAt
+# cardsView rank: 1=Ace, 2-10=pip, 11=Jack, 12=Queen, 13=King
+# cardsView suit: 0=Hearts, 1=Diamonds, 2=Clubs, 3=Spades
+
+result = api.video_poker_action(deal["roundId"], hold=[True, False, True, True, False])
+# hold: 5 booleans — True=keep card, False=discard and draw new
+# result: roundId, state("CLOSED"), cards, cardsView (final hand),
+#         rank (int), rankName, multiplier, payoutAmount, profit,
+#         won (bool), balanceAfter, wasMaxWinCapped
 ```
 
 ### Bet result structure (standard games — verified)
@@ -151,6 +170,45 @@ result = api.hilo_action(round_id, action)
 
 # roll
 {"choices": [0,1,2,3], "result": 2, "won": True, "pickCount": 4}
+
+# video_poker — /action response (top-level, not nested under "result")
+{
+  "roundId":        "4c10b3f8-...",
+  "archetype":      "video_poker",
+  "state":          "CLOSED",
+  "cards":          [17, 3, 28, 48, 25],          # internal indices
+  "cardsView":      [{"rank":3,"suit":1}, {"rank":5,"suit":0},
+                     {"rank":1,"suit":1}, {"rank":2,"suit":3},
+                     {"rank":11,"suit":1}],         # final hand
+  "rank":           0,     # hand rank integer (see paytable below)
+  "rankName":       "No win",
+  "multiplier":     0,
+  "payoutAmount":   0,
+  "profit":         -50,
+  "won":            False,
+  "balanceAfter":   -50,
+  "wasMaxWinCapped": False,
+}
+# Check result["won"] for win/loss; result["rankName"] for hand name
+```
+
+## Video Poker — paytable
+
+Standard Jacks or Better. A pair only pays if it is Jacks, Queens, Kings, or Aces;
+pairs of 2–10 are rank 0 "No win".
+
+| rank | rankName          | Multiplier |
+|------|-------------------|------------|
+| 0    | No win            | 0×         |
+| 1    | Jacks or Better   | 1×         |
+| 2    | Two Pair          | 2×         |
+| 3    | Three of a Kind   | 3×         |
+| 4    | Straight          | 5×         |
+| 5    | Flush             | 6×         |
+| 6    | Full House        | 8×         |
+| 7    | Four of a Kind    | 25×        |
+| 8    | Straight Flush    | 50×        |
+| 9    | Royal Flush       | 100×       |
 ```
 
 ### User & balance (requires auth)
@@ -212,19 +270,20 @@ api.get_protocol_stats()  # global protocol stats
 - `choices=[0,1,2,3]` → 4/6 faces → ~66.7% win chance, ~1.47x multiplier
 - `choices=[5]` → 1/6 faces → ~16.7% win chance, ~5.88x multiplier
 
-## Game IDs (verified June 2026)
+## Game IDs (verified June/July 2026)
 ```python
 from justbet_sdk import GAME_IDS, ORIGINAL_GAMES, VERIFIED_GAMES, get_game_id
 
-VERIFIED_GAMES   # ["dice", "limbo", "coinflip", "plinko", "roll", "hilo"]
+VERIFIED_GAMES   # ["dice", "limbo", "coinflip", "plinko", "roll", "hilo", "video_poker"]
 ORIGINAL_GAMES   # all 13 original JustBet slugs
 
-get_game_id("dice")      # "5b55ea3a-2f90-4c7d-bf4f-18665fd4028e"
-get_game_id("limbo")     # "4b2e766d-768a-4c25-9169-b356eb6e978b"
-get_game_id("coinflip")  # "2d1815d3-d86a-45cd-8a02-96984ea5fada"
-get_game_id("plinko")    # "dc48ab77-1288-4d4d-9f2a-cb21393135b8"
-get_game_id("roll")      # "e5b85122-816d-4455-b279-d025768b9e68"
-get_game_id("hilo")      # "a7ff9d78-4fca-485f-b386-ed8ea49a9fec"
+get_game_id("dice")         # "5b55ea3a-2f90-4c7d-bf4f-18665fd4028e"
+get_game_id("limbo")        # "4b2e766d-768a-4c25-9169-b356eb6e978b"
+get_game_id("coinflip")     # "2d1815d3-d86a-45cd-8a02-96984ea5fada"
+get_game_id("plinko")       # "dc48ab77-1288-4d4d-9f2a-cb21393135b8"
+get_game_id("roll")         # "e5b85122-816d-4455-b279-d025768b9e68"
+get_game_id("hilo")         # "a7ff9d78-4fca-485f-b386-ed8ea49a9fec"
+get_game_id("video_poker")  # "49e261a6-5754-4f59-973b-6d5d353a1c22"
 ```
 
 ## Verified addresses

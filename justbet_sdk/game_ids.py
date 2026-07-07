@@ -44,8 +44,8 @@ ORIGINAL_GAMES = [
     "video_poker", "baccarat",
 ]
 
-# Games with fully verified request/response (Burp-captured, June 2026)
-VERIFIED_GAMES = ["dice", "limbo", "coinflip", "plinko", "roll", "hilo"]
+# Games with fully verified request/response (Burp-captured, June/July 2026)
+VERIFIED_GAMES = ["dice", "limbo", "coinflip", "plinko", "roll", "hilo", "video_poker"]
 
 
 def get_game_id(slug: str) -> str:
